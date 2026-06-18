@@ -601,12 +601,14 @@ export class ConversationService {
     }
 
     if (!quantity) {
-      await this.conversationRepo.updateState(
-        psid,
-        conversation.state,
-        'awaiting_quantity',
-        conversation.context,
-      );
+      if (conversation.state !== 'awaiting_quantity') {
+        await this.conversationRepo.updateState(
+          psid,
+          conversation.state,
+          'awaiting_quantity',
+          conversation.context,
+        );
+      }
       await this.messenger.sendText(psid, 'กรุณาระบุจำนวนที่ต้องการสั่งค่ะ');
       return;
     }
