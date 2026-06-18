@@ -22,6 +22,7 @@ export interface ConversationContext {
   pending_product_id?: string;
   pending_order_id?: string;
   pending_quantity?: number;
+  last_product_id?: string;
 }
 
 export const ORDER_STATUSES = [

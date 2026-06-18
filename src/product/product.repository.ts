@@ -6,6 +6,20 @@ import { PriceTierRow, ProductRow, ProductWithTiers } from './product.types';
 export class ProductRepository {
   constructor(private readonly supabase: SupabaseService) {}
 
+  async listAllProducts(): Promise<ProductRow[]> {
+    const client = this.supabase.getClient();
+    const { data, error } = await client
+      .from('products')
+      .select('*')
+      .eq('is_active', true)
+      .order('name');
+
+    if (error) {
+      throw new Error(`Product list failed: ${error.message}`);
+    }
+    return (data ?? []) as ProductRow[];
+  }
+
   async listProducts(limit = 5): Promise<ProductRow[]> {
     const client = this.supabase.getClient();
     const { data, error } = await client

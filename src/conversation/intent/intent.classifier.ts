@@ -74,6 +74,11 @@ export class IntentClassifier {
 
 Intent ที่รองรับ: ${INTENTS.join(', ')}
 
+คำแนะนำเพิ่มเติม:
+- คำถามเกี่ยวกับรายละเอียดสินค้า (สี ขนาด วัสดุ ราคา มีอะไรบ้าง) ให้ classify เป็น product_inquiry แม้ไม่มีชื่อสินค้าในประโยค
+- ถ้าข้อความก่อนหน้าพูดถึงสินค้า ให้ extract product_name จากบริบทการสนทนา
+- ถ้าลูกค้าถามต่อจากสินค้าที่กำลังดู (เช่น "มีสีอะไรบ้าง") ให้ classify เป็น product_inquiry
+
 ${stateHint}
 
 Context ปัจจุบัน: ${JSON.stringify(context)}

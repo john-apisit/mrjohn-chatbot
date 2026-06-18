@@ -8,6 +8,7 @@ import { ProductService } from '../product/product.service';
 import { SlipService } from '../slip/slip.service';
 import { ConversationRepository } from './conversation.repository';
 import { IntentClassifier } from './intent/intent.classifier';
+import { ProductAnswerService } from './product-answer.service';
 import { POSTBACK_INTENT_MAP, isProductBrowseTrigger } from './intent/intent.types';
 
 const RATE_LIMIT_WINDOW_MS = 60_000;
@@ -31,6 +32,7 @@ export class ConversationService {
   constructor(
     private readonly conversationRepo: ConversationRepository,
     private readonly intentClassifier: IntentClassifier,
+    private readonly productAnswerService: ProductAnswerService,
     private readonly productService: ProductService,
     private readonly orderService: OrderService,
     private readonly slipService: SlipService,
@@ -325,10 +327,19 @@ export class ConversationService {
         break;
       case 'product_inquiry': {
         const query = entities.product_name ?? text;
-        await this.handleProductInquiry(
-          psid,
-          isProductBrowseTrigger(query) ? undefined : query,
-        );
+        if (isProductBrowseTrigger(query)) {
+          await this.handleProductInquiry(psid);
+        } else {
+          const products = await this.productService.searchProducts(query);
+          if (products.length) {
+            await this.handleProductInquiry(psid, query);
+          } else {
+            const answered = await this.tryAnswerProductQuestion(psid, text);
+            if (!answered) {
+              await this.handleProductInquiry(psid, query);
+            }
+          }
+        }
         break;
       }
       case 'stock_check':
@@ -368,6 +379,12 @@ export class ConversationService {
       ? await this.productService.searchProducts(query)
       : await this.productService.listProducts();
     if (!products.length) {
+      if (query) {
+        const answered = await this.tryAnswerProductQuestion(psid, query);
+        if (answered) {
+          return;
+        }
+      }
       const reply = query
         ? `ไม่พบสินค้า "${query}" กรุณาลองค้นหาด้วยชื่ออื่นค่ะ`
         : 'ยังไม่มีสินค้าในระบบค่ะ';
@@ -382,6 +399,7 @@ export class ConversationService {
         await this.messenger.sendText(psid, 'ไม่พบข้อมูลสินค้าค่ะ');
         return;
       }
+      await this.rememberLastProduct(psid, full.id);
       const msg = this.productService.formatProductMessage(full);
       this.addRecentMessage(psid, 'assistant', msg);
       await this.messenger.sendButtonTemplate(psid, msg, [
@@ -439,7 +457,7 @@ export class ConversationService {
     await this.conversationRepo.getOrCreate(psid);
     await this.conversationRepo.updateContext(
       psid,
-      { pending_product_id: productId },
+      { pending_product_id: productId, last_product_id: productId },
       'awaiting_quantity',
     );
 
@@ -657,16 +675,63 @@ ${this.shopBankAccount}`;
   }
 
   private async handleFallback(psid: string, text: string): Promise<void> {
+    const answered = await this.tryAnswerProductQuestion(psid, text);
+    if (answered) {
+      return;
+    }
+
     const reply =
-      'ขออภัยค่ะ ไม่เข้าใจคำถาม กรุณาเลือกจากเมนูด้านล่าง หรือพิมพ์ชื่อสินค้าที่ต้องการค่ะ';
+      'รับทราบค่ะ ระบบกำลังประสานงานเจ้าหน้าที่ แล้วจะตอบกลับให้เร็วที่สุดนะคะ';
     this.addRecentMessage(psid, 'assistant', reply);
-    await this.messenger.sendQuickReplies(psid, reply, [
-      { content_type: 'text', title: 'ดูสินค้า', payload: 'VIEW_PRODUCTS' },
-      { content_type: 'text', title: 'เช็คออเดอร์', payload: 'CHECK_ORDER' },
-    ]);
+    await this.messenger.sendText(psid, reply);
     await this.messenger.notifyAdmin(
       `Fallback intent from PSID ${psid}: "${text}"`,
     );
+  }
+
+  private async tryAnswerProductQuestion(
+    psid: string,
+    question: string,
+  ): Promise<boolean> {
+    const conversation = await this.conversationRepo.getOrCreate(psid);
+    const contextProductId =
+      conversation.context.last_product_id ??
+      conversation.context.pending_product_id;
+
+    const result = await this.productAnswerService.answerQuestion({
+      question,
+      recentMessages: this.getRecentMessages(psid),
+      contextProductId,
+    });
+
+    if (!result.answered) {
+      return false;
+    }
+
+    this.addRecentMessage(psid, 'assistant', result.message);
+
+    if (result.productId) {
+      await this.rememberLastProduct(psid, result.productId);
+      await this.messenger.sendButtonTemplate(psid, result.message, [
+        { title: 'สั่งซื้อ', payload: `ORDER_PRODUCT:${result.productId}` },
+        { title: 'ดูสินค้าอื่น', payload: 'VIEW_OTHER_PRODUCTS' },
+      ]);
+    } else {
+      await this.messenger.sendText(psid, result.message);
+    }
+
+    return true;
+  }
+
+  private async rememberLastProduct(
+    psid: string,
+    productId: string,
+  ): Promise<void> {
+    const conversation = await this.conversationRepo.getOrCreate(psid);
+    await this.conversationRepo.updateContext(psid, {
+      ...conversation.context,
+      last_product_id: productId,
+    });
   }
 
   private parseQuantity(text: string): number | null {

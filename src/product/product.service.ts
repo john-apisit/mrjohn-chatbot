@@ -18,6 +18,10 @@ export class ProductService {
     return this.repository.listProducts();
   }
 
+  listAllProducts(): Promise<ProductRow[]> {
+    return this.repository.listAllProducts();
+  }
+
   searchProducts(query: string): Promise<ProductRow[]> {
     return this.repository.searchProducts(query);
   }
