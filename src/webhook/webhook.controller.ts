@@ -85,12 +85,14 @@ export class WebhookController {
         this.logger.log(
           `dispatch event ${dispatched}/${eventCount} entryId=${entry.id} ${this.describeEvent(event)}`,
         );
-        this.conversationService.handleEvent(event).catch((err) => {
+        try {
+          await this.conversationService.handleEvent(event);
+        } catch (err) {
           this.logger.error(
             `event handler failed psid=${event.sender?.id ?? 'unknown'} ${this.describeEvent(event)}`,
             err instanceof Error ? err.stack : err,
           );
-        });
+        }
       }
     }
 
