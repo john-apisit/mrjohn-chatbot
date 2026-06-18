@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Intent } from '../common/types/domain.types';
+import { CartItem, ConversationContext, Intent } from '../common/types/domain.types';
 import { MessengerService } from '../messenger/messenger.service';
 import { FacebookMessagingEvent } from '../messenger/messenger.types';
 import { OrderService } from '../order/order.service';
@@ -8,8 +8,14 @@ import { ProductService } from '../product/product.service';
 import { ProductRow } from '../product/product.types';
 import { SlipService } from '../slip/slip.service';
 import { ConversationRepository } from './conversation.repository';
+import {
+  CART_CONFIRM_BUTTONS,
+  PRODUCT_QUICK_REPLIES,
+  SHOP_FAQ_QUICK_REPLIES,
+} from './conversation.quick-replies';
 import { IntentClassifier } from './intent/intent.classifier';
 import { ProductAnswerService } from './product-answer.service';
+import { ShopFaqService } from './shop-faq.service';
 import { POSTBACK_INTENT_MAP, isProductBrowseTrigger } from './intent/intent.types';
 
 const RATE_LIMIT_WINDOW_MS = 60_000;
@@ -34,6 +40,7 @@ export class ConversationService {
     private readonly conversationRepo: ConversationRepository,
     private readonly intentClassifier: IntentClassifier,
     private readonly productAnswerService: ProductAnswerService,
+    private readonly shopFaqService: ShopFaqService,
     private readonly productService: ProductService,
     private readonly orderService: OrderService,
     private readonly slipService: SlipService,
@@ -111,13 +118,40 @@ export class ConversationService {
       return;
     }
     if (payload === 'CHANGE_QUANTITY') {
-      await this.conversationRepo.updateState(
+      await this.handleChangeQuantity(psid, conversation.context);
+      return;
+    }
+    if (payload === 'ADD_MORE_PRODUCTS') {
+      await this.handleAddMoreProducts(psid, conversation.context);
+      return;
+    }
+    if (payload === 'CLEAR_CART' || payload === 'CANCEL_ORDER') {
+      await this.handleCancelOrder(psid);
+      return;
+    }
+    if (payload.startsWith('CHECK_STOCK:')) {
+      const productId = payload.replace('CHECK_STOCK:', '');
+      await this.handleStockCheckForProduct(psid, productId);
+      return;
+    }
+    if (payload.startsWith('PRICE_QUOTE:')) {
+      const productId = payload.replace('PRICE_QUOTE:', '');
+      await this.startPriceQuoteForProduct(psid, productId);
+      return;
+    }
+    if (payload === 'PRICE_QUOTE') {
+      await this.startPriceQuoteFlow(psid, conversation.context);
+      return;
+    }
+    if (payload === 'CHECK_STOCK') {
+      await this.handleStockCheckFromContext(psid, conversation.context);
+      return;
+    }
+    if (payload.startsWith('SHOP_FAQ:')) {
+      await this.handleShopFaq(
         psid,
-        conversation.state,
-        'awaiting_quantity',
-        { ...conversation.context, pending_quantity: undefined },
+        payload.replace('SHOP_FAQ:', ''),
       );
-      await this.messenger.sendText(psid, 'กรุณาระบุจำนวนที่ต้องการสั่งค่ะ');
       return;
     }
     if (payload.startsWith('ORDER_PRODUCT:')) {
@@ -133,9 +167,23 @@ export class ConversationService {
     if (mappedIntent === 'greeting') {
       await this.handleGreeting(psid);
     } else if (mappedIntent === 'product_inquiry') {
-      await this.handleProductInquiry(psid);
+      if (payload === 'VIEW_FEATURED') {
+        await this.handleFeaturedProducts(psid);
+      } else if (payload === 'ADD_MORE_PRODUCTS') {
+        await this.handleAddMoreProducts(psid, conversation.context);
+      } else {
+        await this.handleProductInquiry(psid);
+      }
     } else if (mappedIntent === 'order_status') {
       await this.handleOrderStatus(psid);
+    } else if (mappedIntent === 'shop_faq') {
+      await this.handleShopFaq(psid, '');
+    } else if (mappedIntent === 'price_quote') {
+      await this.startPriceQuoteFlow(psid, conversation.context);
+    } else if (mappedIntent === 'stock_check') {
+      await this.handleStockCheckFromContext(psid, conversation.context);
+    } else if (mappedIntent === 'cancel_order') {
+      await this.handleCancelOrder(psid);
     }
   }
 
@@ -147,7 +195,11 @@ export class ConversationService {
     this.addRecentMessage(psid, 'user', text);
 
     let intent: Intent;
-    let entities: { product_name?: string | null; quantity?: number | null };
+    let entities: {
+      product_name?: string | null;
+      quantity?: number | null;
+      faq_topic?: string | null;
+    };
 
     if (conversation.state === 'awaiting_quantity') {
       const qty = this.parseQuantity(text);
@@ -168,6 +220,27 @@ export class ConversationService {
         entities = result.entities;
         this.logger.log(
           `classified psid=${psid} source=awaiting_quantity intent=${intent} entities=${JSON.stringify(entities)}`,
+        );
+      }
+    } else if (conversation.state === 'awaiting_price_quote_qty') {
+      const qty = this.parseQuantity(text);
+      if (qty !== null) {
+        intent = 'price_quote';
+        entities = { quantity: qty };
+        this.logger.log(
+          `parsed quantity psid=${psid} quantity=${qty} intent=price_quote`,
+        );
+      } else {
+        const result = await this.intentClassifier.classify({
+          text,
+          state: conversation.state,
+          context: conversation.context as Record<string, unknown>,
+          recentMessages: this.getRecentMessages(psid),
+        });
+        intent = result.intent;
+        entities = result.entities;
+        this.logger.log(
+          `classified psid=${psid} source=awaiting_price_quote_qty intent=${intent} entities=${JSON.stringify(entities)}`,
         );
       }
     } else {
@@ -316,7 +389,11 @@ export class ConversationService {
   private async routeIntent(
     psid: string,
     intent: Intent,
-    entities: { product_name?: string | null; quantity?: number | null },
+    entities: {
+      product_name?: string | null;
+      quantity?: number | null;
+      faq_topic?: string | null;
+    },
     text: string,
   ): Promise<void> {
     this.logger.log(
@@ -328,7 +405,9 @@ export class ConversationService {
         break;
       case 'product_inquiry': {
         const query = entities.product_name ?? text;
-        if (isProductBrowseTrigger(query)) {
+        if (this.isFeaturedBrowseTrigger(query)) {
+          await this.handleFeaturedProducts(psid);
+        } else if (isProductBrowseTrigger(query)) {
           await this.handleProductInquiry(psid);
         } else {
           const products = await this.productService.searchProducts(query);
@@ -346,6 +425,9 @@ export class ConversationService {
       case 'stock_check':
         await this.handleStockCheck(psid, entities.product_name ?? text);
         break;
+      case 'price_quote':
+        await this.handlePriceQuote(psid, entities, text);
+        break;
       case 'place_order':
         await this.handlePlaceOrder(psid, entities);
         break;
@@ -354,6 +436,12 @@ export class ConversationService {
         break;
       case 'order_status':
         await this.handleOrderStatus(psid);
+        break;
+      case 'shop_faq':
+        await this.handleShopFaq(psid, entities.faq_topic ?? text);
+        break;
+      case 'cancel_order':
+        await this.handleCancelOrder(psid);
         break;
       case 'fallback':
       default:
@@ -367,7 +455,7 @@ export class ConversationService {
       'สวัสดีค่ะ ยินดีต้อนรับ 🙏\n\nมีอะไรให้ช่วยไหมคะ?';
     this.addRecentMessage(psid, 'assistant', reply);
     await this.messenger.sendQuickReplies(psid, reply, [
-      { content_type: 'text', title: 'ดูสินค้า', payload: 'VIEW_PRODUCTS' },
+      ...PRODUCT_QUICK_REPLIES,
       { content_type: 'text', title: 'เช็คออเดอร์', payload: 'CHECK_ORDER' },
     ]);
   }
@@ -405,8 +493,17 @@ export class ConversationService {
       this.addRecentMessage(psid, 'assistant', msg);
       await this.messenger.sendButtonTemplate(psid, msg, [
         { title: 'สั่งซื้อ', payload: `ORDER_PRODUCT:${full.id}` },
-        { title: 'ดูสินค้าอื่น', payload: 'VIEW_OTHER_PRODUCTS' },
+        { title: 'คำนวณราคา', payload: 'PRICE_QUOTE' },
+        { title: 'เช็คสต็อก', payload: 'CHECK_STOCK' },
       ]);
+      await this.messenger.sendQuickReplies(
+        psid,
+        'เลือกดำเนินการต่อได้เลยค่ะ',
+        [
+          { content_type: 'text', title: 'ดูสินค้าอื่น', payload: 'VIEW_OTHER_PRODUCTS' },
+          { content_type: 'text', title: 'ข้อมูลร้าน', payload: 'SHOP_FAQ' },
+        ],
+      );
       return;
     }
 
@@ -422,6 +519,14 @@ export class ConversationService {
               {
                 title: 'สั่งซื้อ',
                 payload: `ORDER_PRODUCT:${p.id}`,
+              },
+              {
+                title: 'คำนวณราคา',
+                payload: `PRICE_QUOTE:${p.id}`,
+              },
+              {
+                title: 'เช็คสต็อก',
+                payload: `CHECK_STOCK:${p.id}`,
               },
             ],
           };
@@ -469,7 +574,10 @@ export class ConversationService {
 
   private async handlePlaceOrder(
     psid: string,
-    entities: { product_name?: string | null; quantity?: number | null },
+    entities: {
+      product_name?: string | null;
+      quantity?: number | null;
+    },
   ): Promise<void> {
     const conversation = await this.conversationRepo.getOrCreate(psid);
     this.logger.log(
@@ -540,72 +648,153 @@ export class ConversationService {
       return;
     }
 
-    const summary = this.productService.formatOrderSummary(
-      resolved.product.name,
-      quantity,
-      resolved.unit_price,
-      resolved.min_qty,
-      resolved.line_total,
+    const cartItem: CartItem = {
+      product_id: productId,
+      name: resolved.product.name,
+      qty: quantity,
+      unit_price: resolved.unit_price,
+      min_qty_tier: resolved.min_qty,
+      line_total: resolved.line_total,
+    };
+
+    const existingCart = conversation.context.cart_items ?? [];
+    const cartItems = [
+      ...existingCart.filter((item) => item.product_id !== productId),
+      cartItem,
+    ];
+    const totalAmount = cartItems.reduce(
+      (sum, item) => sum + item.line_total,
+      0,
     );
 
-    const order = await this.orderService.createDraftOrder(
+    let orderId = conversation.context.pending_order_id;
+    if (orderId) {
+      const updated = await this.orderService.updateDraftOrder(
+        orderId,
+        cartItems,
+        totalAmount,
+      );
+      if (!updated) {
+        const order = await this.orderService.createDraftOrder(
+          psid,
+          cartItems,
+          totalAmount,
+        );
+        orderId = order.id;
+      }
+    } else {
+      const order = await this.orderService.createDraftOrder(
+        psid,
+        cartItems,
+        totalAmount,
+      );
+      orderId = order.id;
+    }
+
+    const summary = this.productService.formatCartSummary(cartItems);
+
+    await this.conversationRepo.updateContext(
       psid,
-      [
-        {
-          product_id: productId,
-          name: resolved.product.name,
-          qty: quantity,
-          unit_price: resolved.unit_price,
-          min_qty_tier: resolved.min_qty,
-          line_total: resolved.line_total,
-        },
-      ],
-      resolved.line_total,
+      {
+        ...conversation.context,
+        cart_items: cartItems,
+        pending_product_id: productId,
+        pending_quantity: quantity,
+        pending_order_id: orderId,
+        last_product_id: productId,
+      },
+      'awaiting_order_confirm',
     );
-
-    await this.conversationRepo.updateContext(psid, {
-      pending_product_id: productId,
-      pending_quantity: quantity,
-      pending_order_id: order.id,
-    }, 'awaiting_order_confirm');
 
     this.logger.log(
-      `draft order created psid=${psid} orderId=${order.id} productId=${productId} quantity=${quantity} total=${resolved.line_total}`,
+      `draft order updated psid=${psid} orderId=${orderId} items=${cartItems.length} total=${totalAmount}`,
     );
     this.addRecentMessage(psid, 'assistant', summary);
-    await this.messenger.sendButtonTemplate(psid, summary, [
-      { title: 'ยืนยันออเดอร์', payload: 'CONFIRM_ORDER' },
-      { title: 'เปลี่ยนจำนวน', payload: 'CHANGE_QUANTITY' },
-    ]);
+    await this.messenger.sendButtonTemplate(
+      psid,
+      summary,
+      CART_CONFIRM_BUTTONS.slice(0, 3).map((button) => ({
+        title: button.title,
+        payload: button.payload,
+      })),
+    );
+    await this.messenger.sendQuickReplies(
+      psid,
+      'ต้องการล้างตะกร้าหรือยกเลิกออเดอร์ พิมพ์ "ยกเลิก" หรือกดปุ่มด้านล่างค่ะ',
+      [
+        {
+          content_type: 'text',
+          title: 'ล้างตะกร้า',
+          payload: 'CLEAR_CART',
+        },
+      ],
+    );
   }
 
   private async confirmPendingOrder(
     psid: string,
-    context: { pending_order_id?: string; pending_product_id?: string; pending_quantity?: number },
+    context: ConversationContext,
   ): Promise<void> {
     const orderId = context.pending_order_id;
-    const productId = context.pending_product_id;
-    const quantity = context.pending_quantity;
     this.logger.log(
-      `confirmPendingOrder psid=${psid} orderId=${orderId ?? 'none'} productId=${productId ?? 'none'} quantity=${quantity ?? 'none'}`,
+      `confirmPendingOrder psid=${psid} orderId=${orderId ?? 'none'} items=${context.cart_items?.length ?? 0}`,
     );
 
-    if (!orderId || !productId || !quantity) {
+    if (!orderId) {
       await this.messenger.sendText(psid, 'ไม่พบออเดอร์ กรุณาสั่งซื้อใหม่ค่ะ');
       return;
     }
 
-    const reserved = await this.productService.reserveStock(productId, quantity);
-    if (!reserved) {
-      await this.messenger.sendText(
-        psid,
-        'ขออภัยค่ะ สินค้าไม่เพียงพอ กรุณาลองใหม่',
-      );
+    const order = await this.orderService.getOrderById(orderId);
+    if (!order?.items.length) {
+      await this.messenger.sendText(psid, 'ไม่พบออเดอร์ กรุณาสั่งซื้อใหม่ค่ะ');
       return;
     }
 
-    const order = await this.orderService.confirmOrder(orderId);
-    if (!order) {
+    for (const item of order.items) {
+      const inStock = await this.productService.checkStock(
+        item.product_id,
+        item.qty,
+      );
+      if (!inStock) {
+        await this.messenger.sendText(
+          psid,
+          `ขออภัยค่ะ สินค้า "${item.name}" ไม่เพียงพอ กรุณาปรับจำนวนหรือลบรายการออก`,
+        );
+        return;
+      }
+    }
+
+    const reservedItems: Array<{ product_id: string; qty: number }> = [];
+    for (const item of order.items) {
+      const reserved = await this.productService.reserveStock(
+        item.product_id,
+        item.qty,
+      );
+      if (!reserved) {
+        for (const released of reservedItems) {
+          await this.productService.releaseStock(
+            released.product_id,
+            released.qty,
+          );
+        }
+        await this.messenger.sendText(
+          psid,
+          'ขออภัยค่ะ สินค้าไม่เพียงพอ กรุณาลองใหม่',
+        );
+        return;
+      }
+      reservedItems.push({
+        product_id: item.product_id,
+        qty: item.qty,
+      });
+    }
+
+    const confirmed = await this.orderService.confirmOrder(orderId);
+    if (!confirmed) {
+      for (const item of reservedItems) {
+        await this.productService.releaseStock(item.product_id, item.qty);
+      }
       await this.messenger.sendText(
         psid,
         'เกิดข้อผิดพลาด กรุณาลองใหม่ค่ะ',
@@ -617,12 +806,16 @@ export class ConversationService {
       psid,
       'awaiting_order_confirm',
       'awaiting_slip',
-      { pending_order_id: orderId },
+      {
+        pending_order_id: orderId,
+        cart_items: context.cart_items,
+        last_product_id: context.last_product_id,
+      },
     );
 
-    const paymentMsg = `✅ ยืนยันออเดอร์ ${order.order_number} แล้วค่ะ
+    const paymentMsg = `✅ ยืนยันออเดอร์ ${confirmed.order_number} แล้วค่ะ
 
-💵 ยอดชำระ: ${Number(order.total_amount).toLocaleString()} บาท
+💵 ยอดชำระ: ${Number(confirmed.total_amount).toLocaleString()} บาท
 
 🏦 โอนเข้าบัญชี:
 ${this.shopBankName}
@@ -636,14 +829,14 @@ ${this.shopBankAccount}
 
     await this.orderService.notifyAdmin('new_order', orderId, {
       psid,
-      orderNumber: order.order_number,
-      total: order.total_amount,
+      orderNumber: confirmed.order_number,
+      total: confirmed.total_amount,
     });
     await this.messenger.notifyAdmin(
-      `New order: ${order.order_number} — ${order.total_amount} THB`,
+      `New order: ${confirmed.order_number} — ${confirmed.total_amount} THB`,
     );
     this.logger.log(
-      `order confirmed psid=${psid} orderNumber=${order.order_number} total=${order.total_amount}`,
+      `order confirmed psid=${psid} orderNumber=${confirmed.order_number} total=${confirmed.total_amount}`,
     );
   }
 
@@ -758,6 +951,14 @@ ${this.shopBankAccount}`;
             title: 'สั่งซื้อ',
             payload: `ORDER_PRODUCT:${p.id}`,
           },
+          {
+            title: 'คำนวณราคา',
+            payload: `PRICE_QUOTE:${p.id}`,
+          },
+          {
+            title: 'เช็คสต็อก',
+            payload: `CHECK_STOCK:${p.id}`,
+          },
         ],
       })),
     );
@@ -772,6 +973,371 @@ ${this.shopBankAccount}`;
       ...conversation.context,
       last_product_id: productId,
     });
+  }
+
+  private async handleFeaturedProducts(psid: string): Promise<void> {
+    const products = await this.productService.listFeaturedProducts();
+    if (!products.length) {
+      await this.messenger.sendText(
+        psid,
+        'ยังไม่มีสินค้าแนะนำในขณะนี้ค่ะ ลองดูสินค้าทั้งหมดได้เลย',
+      );
+      await this.handleProductInquiry(psid);
+      return;
+    }
+
+    await this.sendProductList(
+      psid,
+      products,
+      '⭐ สินค้าแนะนำของร้านค่ะ',
+    );
+  }
+
+  private async handlePriceQuote(
+    psid: string,
+    entities: {
+      product_name?: string | null;
+      quantity?: number | null;
+    },
+    text: string,
+  ): Promise<void> {
+    const conversation = await this.conversationRepo.getOrCreate(psid);
+    const productId = await this.resolveProductId(
+      psid,
+      entities.product_name,
+      conversation.context,
+    );
+    let quantity =
+      entities.quantity ??
+      (conversation.state === 'awaiting_price_quote_qty'
+        ? this.parseQuantity(text)
+        : null);
+
+    if (!productId) {
+      await this.messenger.sendText(
+        psid,
+        'กรุณาเลือกหรือพิมพ์ชื่อสินค้าก่อนคำนวณราคาค่ะ',
+      );
+      await this.handleProductInquiry(psid);
+      return;
+    }
+
+    if (!quantity) {
+      await this.conversationRepo.updateContext(
+        psid,
+        {
+          ...conversation.context,
+          price_quote_product_id: productId,
+          last_product_id: productId,
+        },
+        'awaiting_price_quote_qty',
+      );
+      const product = await this.productService.getProductById(productId);
+      await this.messenger.sendText(
+        psid,
+        `กรุณาระบุจำนวนที่ต้องการคำนวณราคาสำหรับ "${product?.name ?? 'สินค้านี้'}" ค่ะ`,
+      );
+      return;
+    }
+
+    await this.sendPriceQuote(psid, productId, quantity);
+    if (conversation.state === 'awaiting_price_quote_qty') {
+      await this.conversationRepo.updateState(
+        psid,
+        'awaiting_price_quote_qty',
+        'idle',
+        {
+          ...conversation.context,
+          price_quote_product_id: undefined,
+          last_product_id: productId,
+        },
+      );
+    } else {
+      await this.rememberLastProduct(psid, productId);
+    }
+  }
+
+  private async startPriceQuoteFlow(
+    psid: string,
+    context: ConversationContext,
+  ): Promise<void> {
+    const productId =
+      context.last_product_id ??
+      context.pending_product_id ??
+      context.price_quote_product_id;
+
+    if (!productId) {
+      await this.messenger.sendText(
+        psid,
+        'กรุณาเลือกสินค้าก่อนคำนวณราคาค่ะ',
+      );
+      await this.handleProductInquiry(psid);
+      return;
+    }
+
+    await this.conversationRepo.updateContext(
+      psid,
+      {
+        ...context,
+        price_quote_product_id: productId,
+        last_product_id: productId,
+      },
+      'awaiting_price_quote_qty',
+    );
+    const product = await this.productService.getProductById(productId);
+    await this.messenger.sendText(
+      psid,
+      `กรุณาระบุจำนวนที่ต้องการคำนวณราคาสำหรับ "${product?.name ?? 'สินค้านี้'}" ค่ะ`,
+    );
+  }
+
+  private async sendPriceQuote(
+    psid: string,
+    productId: string,
+    quantity: number,
+  ): Promise<void> {
+    let resolved;
+    try {
+      resolved = await this.productService.resolvePrice(productId, quantity);
+    } catch {
+      await this.messenger.sendText(
+        psid,
+        'จำนวนที่ระบุไม่ถึงขั้นต่ำ กรุณาระบุจำนวนใหม่ค่ะ',
+      );
+      return;
+    }
+
+    const inStock = await this.productService.checkStock(productId, quantity);
+    const msg = this.productService.formatPriceQuote(
+      resolved.product.name,
+      quantity,
+      resolved.unit_price,
+      resolved.min_qty,
+      resolved.line_total,
+      inStock,
+    );
+    this.addRecentMessage(psid, 'assistant', msg);
+    await this.messenger.sendButtonTemplate(psid, msg, [
+      { title: 'สั่งซื้อ', payload: `ORDER_PRODUCT:${productId}` },
+      { title: 'คำนวณใหม่', payload: 'PRICE_QUOTE' },
+      { title: 'ดูสินค้าอื่น', payload: 'VIEW_OTHER_PRODUCTS' },
+    ]);
+  }
+
+  private async handleShopFaq(
+    psid: string,
+    topicInput: string,
+  ): Promise<void> {
+    const topic = this.shopFaqService.resolveTopic(topicInput);
+    if (!topic) {
+      const menu = this.shopFaqService.getMenuMessage();
+      this.addRecentMessage(psid, 'assistant', menu);
+      await this.messenger.sendQuickReplies(psid, menu, SHOP_FAQ_QUICK_REPLIES);
+      return;
+    }
+
+    const answer = this.shopFaqService.getAnswer(topic);
+    this.addRecentMessage(psid, 'assistant', answer);
+    await this.messenger.sendText(psid, answer);
+  }
+
+  private async handleCancelOrder(psid: string): Promise<void> {
+    const conversation = await this.conversationRepo.getOrCreate(psid);
+    const orderId = conversation.context.pending_order_id;
+
+    if (orderId) {
+      const order = await this.orderService.getOrderById(orderId);
+      if (order) {
+        if (order.status === 'pending_payment') {
+          for (const item of order.items) {
+            await this.productService.releaseStock(item.product_id, item.qty);
+          }
+        }
+        await this.orderService.cancelOrder(orderId);
+      }
+    }
+
+    await this.conversationRepo.updateContext(psid, {}, 'idle');
+
+    const reply = 'ยกเลิกออเดอร์และล้างตะกร้าเรียบร้อยแล้วค่ะ';
+    this.addRecentMessage(psid, 'assistant', reply);
+    await this.messenger.sendQuickReplies(psid, reply, PRODUCT_QUICK_REPLIES);
+  }
+
+  private async handleAddMoreProducts(
+    psid: string,
+    context: ConversationContext,
+  ): Promise<void> {
+    await this.conversationRepo.updateContext(
+      psid,
+      {
+        cart_items: context.cart_items,
+        pending_order_id: context.pending_order_id,
+        last_product_id: context.last_product_id,
+        pending_product_id: undefined,
+        pending_quantity: undefined,
+      },
+      'idle',
+    );
+    await this.messenger.sendText(
+      psid,
+      'เลือกสินค้าเพิ่มในตะกร้าได้เลยค่ะ',
+    );
+    await this.handleProductInquiry(psid);
+  }
+
+  private async handleChangeQuantity(
+    psid: string,
+    context: ConversationContext,
+  ): Promise<void> {
+    const productId =
+      context.pending_product_id ??
+      context.cart_items?.[context.cart_items.length - 1]?.product_id;
+
+    if (!productId) {
+      await this.messenger.sendText(psid, 'ไม่พบสินค้าในตะกร้า กรุณาเลือกสินค้าใหม่ค่ะ');
+      return;
+    }
+
+    const cartItems =
+      context.cart_items?.filter((item) => item.product_id !== productId) ?? [];
+
+    if (context.pending_order_id) {
+      if (cartItems.length) {
+        const totalAmount = cartItems.reduce(
+          (sum, item) => sum + item.line_total,
+          0,
+        );
+        await this.orderService.updateDraftOrder(
+          context.pending_order_id,
+          cartItems,
+          totalAmount,
+        );
+      } else {
+        await this.orderService.cancelOrder(context.pending_order_id);
+      }
+    }
+
+    await this.conversationRepo.updateContext(
+      psid,
+      {
+        ...context,
+        cart_items: cartItems,
+        pending_product_id: productId,
+        pending_quantity: undefined,
+        pending_order_id: cartItems.length
+          ? context.pending_order_id
+          : undefined,
+        last_product_id: productId,
+      },
+      'awaiting_quantity',
+    );
+
+    const product = await this.productService.getProductById(productId);
+    if (!product) {
+      await this.messenger.sendText(psid, 'ไม่พบสินค้าค่ะ');
+      return;
+    }
+
+    const msg = `${this.productService.formatProductMessage(product)}\n\nกรุณาระบุจำนวนใหม่ค่ะ`;
+    this.addRecentMessage(psid, 'assistant', msg);
+    await this.messenger.sendText(psid, msg);
+  }
+
+  private async handleStockCheckForProduct(
+    psid: string,
+    productId: string,
+  ): Promise<void> {
+    const product = await this.productService.getProductById(productId);
+    if (!product) {
+      await this.messenger.sendText(psid, 'ไม่พบสินค้าค่ะ');
+      return;
+    }
+
+    await this.rememberLastProduct(psid, productId);
+    const reply = `📦 ${product.name}\n📊 คงเหลือ: ${product.stock_qty.toLocaleString()} ชิ้น`;
+    this.addRecentMessage(psid, 'assistant', reply);
+    await this.messenger.sendText(psid, reply);
+  }
+
+  private async startPriceQuoteForProduct(
+    psid: string,
+    productId: string,
+  ): Promise<void> {
+    const conversation = await this.conversationRepo.getOrCreate(psid);
+    await this.conversationRepo.updateContext(
+      psid,
+      {
+        ...conversation.context,
+        price_quote_product_id: productId,
+        last_product_id: productId,
+      },
+      'awaiting_price_quote_qty',
+    );
+    const product = await this.productService.getProductById(productId);
+    await this.messenger.sendText(
+      psid,
+      `กรุณาระบุจำนวนที่ต้องการคำนวณราคาสำหรับ "${product?.name ?? 'สินค้านี้'}" ค่ะ`,
+    );
+  }
+
+  private async handleStockCheckFromContext(
+    psid: string,
+    context: ConversationContext,
+  ): Promise<void> {
+    const productId =
+      context.last_product_id ??
+      context.pending_product_id ??
+      context.price_quote_product_id;
+
+    if (!productId) {
+      await this.messenger.sendText(
+        psid,
+        'กรุณาเลือกสินค้าก่อนเช็คสต็อกค่ะ',
+      );
+      await this.handleProductInquiry(psid);
+      return;
+    }
+
+    const product = await this.productService.getProductById(productId);
+    if (!product) {
+      await this.messenger.sendText(psid, 'ไม่พบสินค้าค่ะ');
+      return;
+    }
+
+    const reply = `📦 ${product.name}\n📊 คงเหลือ: ${product.stock_qty.toLocaleString()} ชิ้น`;
+    this.addRecentMessage(psid, 'assistant', reply);
+    await this.messenger.sendText(psid, reply);
+  }
+
+  private async resolveProductId(
+    psid: string,
+    productName: string | null | undefined,
+    context: ConversationContext,
+  ): Promise<string | null> {
+    if (productName) {
+      const products = await this.productService.searchProducts(productName);
+      if (products.length === 1) {
+        return products[0].id;
+      }
+      if (products.length > 1) {
+        await this.handleProductInquiry(psid, productName);
+        return null;
+      }
+    }
+
+    return (
+      context.price_quote_product_id ??
+      context.last_product_id ??
+      context.pending_product_id ??
+      null
+    );
+  }
+
+  private isFeaturedBrowseTrigger(query: string): boolean {
+    return ['VIEW_FEATURED', 'สินค้าแนะนำ', 'แนะนำหน่อย'].includes(
+      query.trim(),
+    );
   }
 
   private parseQuantity(text: string): number | null {

@@ -5,7 +5,17 @@ export interface ProductRow {
   stock_qty: number;
   image_url: string | null;
   is_active: boolean;
+  is_featured: boolean;
   created_at: string;
+}
+
+export interface ProductCatalogEntry {
+  id: string;
+  name: string;
+  description: string;
+  stock_qty: number;
+  is_featured: boolean;
+  price_tiers: Array<{ min_qty: number; unit_price: number }>;
 }
 
 export interface PriceTierRow {

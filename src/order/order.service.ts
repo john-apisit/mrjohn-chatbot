@@ -40,6 +40,18 @@ export class OrderService {
     return this.repository.setPendingPayment(orderId);
   }
 
+  updateDraftOrder(
+    orderId: string,
+    items: OrderItem[],
+    totalAmount: number,
+  ): Promise<OrderRow | null> {
+    return this.repository.updateDraftOrder(orderId, items, totalAmount);
+  }
+
+  cancelOrder(orderId: string): Promise<OrderRow | null> {
+    return this.repository.cancelOrder(orderId);
+  }
+
   markPaid(
     orderId: string,
     slipUrl: string,

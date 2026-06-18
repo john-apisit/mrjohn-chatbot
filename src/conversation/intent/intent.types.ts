@@ -10,6 +10,7 @@ export interface ClassifyInput {
 export interface IntentEntities {
   product_name?: string | null;
   quantity?: number | null;
+  faq_topic?: string | null;
 }
 
 export interface IntentResult {
@@ -21,18 +22,28 @@ export interface IntentResult {
 export const POSTBACK_INTENT_MAP: Record<string, string> = {
   GREETING: 'greeting',
   VIEW_PRODUCTS: 'product_inquiry',
+  VIEW_FEATURED: 'product_inquiry',
   CHECK_ORDER: 'order_status',
   PLACE_ORDER: 'place_order',
   CONFIRM_ORDER: 'place_order',
   CHANGE_QUANTITY: 'place_order',
   VIEW_OTHER_PRODUCTS: 'product_inquiry',
+  PRICE_QUOTE: 'price_quote',
+  CHECK_STOCK: 'stock_check',
+  SHOP_FAQ: 'shop_faq',
+  ADD_MORE_PRODUCTS: 'product_inquiry',
+  CLEAR_CART: 'cancel_order',
+  CANCEL_ORDER: 'cancel_order',
 };
 
 const PRODUCT_BROWSE_TRIGGERS = new Set([
   'VIEW_PRODUCTS',
   'VIEW_OTHER_PRODUCTS',
+  'VIEW_FEATURED',
+  'ADD_MORE_PRODUCTS',
   'ดูสินค้า',
   'ดูสินค้าอื่น',
+  'สินค้าแนะนำ',
 ]);
 
 export function isProductBrowseTrigger(query: string): boolean {

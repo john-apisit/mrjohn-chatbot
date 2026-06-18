@@ -20,6 +20,22 @@ export class ProductRepository {
     return (data ?? []) as ProductRow[];
   }
 
+  async listFeaturedProducts(limit = 5): Promise<ProductRow[]> {
+    const client = this.supabase.getClient();
+    const { data, error } = await client
+      .from('products')
+      .select('*')
+      .eq('is_active', true)
+      .eq('is_featured', true)
+      .order('name')
+      .limit(limit);
+
+    if (error) {
+      throw new Error(`Featured product list failed: ${error.message}`);
+    }
+    return (data ?? []) as ProductRow[];
+  }
+
   async listProducts(limit = 5): Promise<ProductRow[]> {
     const client = this.supabase.getClient();
     const { data, error } = await client
@@ -140,5 +156,36 @@ export class ProductRepository {
       .eq('stock_qty', current);
 
     return !updateError;
+  }
+
+  async listCatalogEntries(): Promise<
+    Array<ProductRow & { price_tiers: PriceTierRow[] }>
+  > {
+    const products = await this.listAllProducts();
+    return Promise.all(
+      products.map(async (product) => ({
+        ...product,
+        price_tiers: await this.getPriceTiers(product.id),
+      })),
+    );
+  }
+
+  async releaseStock(id: string, qty: number): Promise<void> {
+    const client = this.supabase.getClient();
+    const { data, error } = await client
+      .from('products')
+      .select('stock_qty')
+      .eq('id', id)
+      .single();
+
+    if (error || !data) {
+      return;
+    }
+
+    const current = (data as { stock_qty: number }).stock_qty;
+    await client
+      .from('products')
+      .update({ stock_qty: current + qty })
+      .eq('id', id);
   }
 }

@@ -131,6 +131,58 @@ export class OrderRepository {
     return this.mapOrder(data);
   }
 
+  async updateDraftOrder(
+    id: string,
+    items: OrderItem[],
+    totalAmount: number,
+  ): Promise<OrderRow | null> {
+    const client = this.supabase.getClient();
+    const { data, error } = await client
+      .from('orders')
+      .update({
+        items,
+        total_amount: totalAmount,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', id)
+      .eq('status', 'draft')
+      .select()
+      .single();
+
+    if (error || !data) {
+      return null;
+    }
+    return this.mapOrder(data);
+  }
+
+  async cancelOrder(id: string): Promise<OrderRow | null> {
+    const client = this.supabase.getClient();
+    const { data: existing } = await client
+      .from('orders')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (!existing) {
+      return null;
+    }
+
+    const status = existing.status as string;
+    if (!isOrderStatus(status)) {
+      return null;
+    }
+
+    if (status === 'shipped' || status === 'cancelled') {
+      return null;
+    }
+
+    if (status === 'pending_payment' || status === 'paid') {
+      return this.updateOrderStatus(id, status, 'cancelled');
+    }
+
+    return this.updateOrderStatus(id, 'draft', 'cancelled');
+  }
+
   async setPendingPayment(id: string): Promise<OrderRow | null> {
     return this.updateOrderStatus(id, 'draft', 'pending_payment');
   }

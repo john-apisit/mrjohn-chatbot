@@ -75,7 +75,10 @@ export class IntentClassifier {
 Intent ที่รองรับ: ${INTENTS.join(', ')}
 
 คำแนะนำเพิ่มเติม:
-- คำถามเกี่ยวกับรายละเอียดสินค้า (สี ขนาด วัสดุ ราคา มีอะไรบ้าง) ให้ classify เป็น product_inquiry แม้ไม่มีชื่อสินค้าในประโยค
+- คำถามเกี่ยวกับรายละเอียดสินค้า (สี ขนาด วัสดุ ราคา มีอะไรบ้าง แนะนำ เปรียบเทียบ) ให้ classify เป็น product_inquiry แม้ไม่มีชื่อสินค้าในประโยค
+- คำถามคำนวณราคา/ยอดรวมตามจำนวน (เช่น "500 ชิ้น รวมเท่าไหร่" "ชิ้นละกี่บาท") ให้ classify เป็น price_quote และ extract quantity ถ้ามี
+- คำถามจัดส่ง โปรโมชั่น คืนสินค้า ใบกำกับภาษี สินค้าหมด ติดต่อแอดมิน ให้ classify เป็น shop_faq และ extract faq_topic เป็น shipping|promo|return|invoice|restock|contact
+- คำถามยกเลิกออเดอร์/ล้างตะกร้า ให้ classify เป็น cancel_order
 - ถ้าข้อความก่อนหน้าพูดถึงสินค้า ให้ extract product_name จากบริบทการสนทนา
 - ถ้าลูกค้าถามต่อจากสินค้าที่กำลังดู (เช่น "มีสีอะไรบ้าง") ให้ classify เป็น product_inquiry
 
@@ -88,7 +91,8 @@ Context ปัจจุบัน: ${JSON.stringify(context)}
   "intent": "<intent>",
   "entities": {
     "product_name": "<ชื่อสินค้าหรือ null>",
-    "quantity": <จำนวนหรือ null>
+    "quantity": <จำนวนหรือ null>,
+    "faq_topic": "<shipping|promo|return|invoice|restock|contact หรือ null>"
   },
   "confidence": <0-1>
 }`;
@@ -98,6 +102,8 @@ Context ปัจจุบัน: ${JSON.stringify(context)}
     switch (state) {
       case 'awaiting_quantity':
         return 'สถานะปัจจุบัน: รอจำนวนสินค้า — ถ้าผู้ใช้ตอบตัวเลข ให้ intent เป็น place_order';
+      case 'awaiting_price_quote_qty':
+        return 'สถานะปัจจุบัน: รอจำนวนเพื่อคำนวณราคา — ถ้าผู้ใช้ตอบตัวเลข ให้ intent เป็น price_quote';
       case 'awaiting_order_confirm':
         return 'สถานะปัจจุบัน: รอยืนยันออเดอร์ — ถ้าผู้ใช้ยืนยัน ให้ intent เป็น place_order';
       case 'awaiting_slip':

@@ -42,17 +42,14 @@ export class ProductAnswerService {
     input: ProductAnswerInput,
   ): Promise<ProductAnswerResult> {
     try {
-      const products = await this.productService.listAllProducts();
-      if (!products.length) {
+      const entries = await this.productService.listCatalogEntries();
+      if (!entries.length) {
         return { answered: false, productIds: [], message: '' };
       }
 
-      const catalog = products.map((p) => ({
-        id: p.id,
-        name: p.name,
-        description: p.description ?? '',
-        stock_qty: p.stock_qty,
-      }));
+      const catalog = entries.map((entry) =>
+        this.productService.toCatalogEntry(entry),
+      );
 
       const contextHint = input.contextProductId
         ? `\nสินค้าที่ลูกค้ากำลังสนใจจากบริบท (id): ${input.contextProductId}`
@@ -66,17 +63,19 @@ export class ProductAnswerService {
             role: 'system',
             content: `คุณเป็นผู้ช่วยขายของร้าน "${this.shopName}" ตอบคำถามลูกค้าใน Facebook Messenger
 
-Catalog สินค้าทั้งหมด:
+Catalog สินค้าทั้งหมด (รวมราคา price_tiers):
 ${JSON.stringify(catalog, null, 2)}${contextHint}
 
 กฎ:
 - ตอบเป็นภาษาไทย สุภาพ ใช้ "ค่ะ"
-- ใช้เฉพาะข้อมูลจาก catalog (ชื่อ name, รายละเอียด description, สต็อก stock_qty) ห้ามแต่งข้อมูล
+- ใช้เฉพาะข้อมูลจาก catalog (ชื่อ name, รายละเอียด description, สต็อก stock_qty, ราคา price_tiers, is_featured) ห้ามแต่งข้อมูล
+- คำนวณราคารวมจาก price_tiers ได้: เลือก tier ที่ min_qty <= จำนวนที่ถาม และ min_qty สูงสุด
 - ค้นหาสินค้าที่เกี่ยวข้องจากชื่อและ description แล้วใส่ product_ids เป็น array ของ id สินค้าที่พบทั้งหมด
-- ถ้าคำถามเกี่ยวกับสินค้า (เช่น สี ขนาด ราคา รายละเอียด มีอะไรบ้าง) ให้ can_answer เป็น true
+- ถ้าคำถามเกี่ยวกับสินค้า (เช่น สี ขนาด ราคา รายละเอียด มีอะไรบ้าง แนะนำ เปรียบเทียบ) ให้ can_answer เป็น true
 - ถ้าไม่พบสินค้าที่เกี่ยวข้องเลย ให้ can_answer เป็น true, product_ids เป็น [] และ message บอกว่าไม่พบสินค้า
-- ถ้าไม่พบข้อมูลที่ถามใน description แต่พบสินค้า ให้ใส่ product_ids ของสินค้าที่เกี่ยวข้อง และ message อธิบายว่าไม่มีข้อมูลนั้น
-- ถ้าคำถามไม่เกี่ยวกับสินค้าเลย (เช่น ทักทาย ถามออเดอร์ ชำระเงิน) ให้ can_answer เป็น false
+- ถ้าไม่พบข้อมูลที่ถามใน description แต่พบสินค้า ให้ใส่ product_ids ของสินค้าที่เกี่ยวข้อง และ message อธิบายว่าไม่มีข้อมูลนั้นในระบบ
+- ถ้าถามแนะนำสินค้า ให้เลือกสินค้าที่ is_featured เป็น true ก่อน
+- ถ้าคำถามไม่เกี่ยวกับสินค้าเลย (เช่น ทักทาย ถามออเดอร์ ชำระเงิน จัดส่ง) ให้ can_answer เป็น false
 - message เป็นข้อความสรุปสั้นๆ ก่อนแสดงรายการสินค้า (เช่น "พบสินค้าที่มีสีดังนี้ค่ะ")
 
 ตอบเป็น JSON เท่านั้น:
@@ -104,8 +103,9 @@ ${JSON.stringify(catalog, null, 2)}${contextHint}
         return { answered: false, productIds: [], message: '' };
       }
 
-      const productIds = (parsed.product_ids ?? [])
-        .filter((id) => catalog.some((p) => p.id === id));
+      const productIds = (parsed.product_ids ?? []).filter((id) =>
+        catalog.some((p) => p.id === id),
+      );
 
       return {
         answered: true,
