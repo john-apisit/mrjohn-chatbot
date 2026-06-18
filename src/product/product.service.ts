@@ -111,7 +111,7 @@ ${tierLines}`;
     return `💰 คำนวณราคา
 
 📦 ${productName} × ${qty.toLocaleString()} ชิ้น
-   ${unitPrice.toLocaleString()} บาท/ชิ้น (ขั้นต่ำ tier ${minQtyTier.toLocaleString()} ชิ้น)
+   ${unitPrice.toLocaleString()} บาท/ชิ้น (ขั้นต่ำ ${minQtyTier.toLocaleString()} ชิ้น)
 ━━━━━━━━━━━━━━━━
 💵 รวม: ${lineTotal.toLocaleString()} บาท
 

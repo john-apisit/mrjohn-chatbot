@@ -9,9 +9,14 @@ import { ProductRow } from '../product/product.types';
 import { SlipService } from '../slip/slip.service';
 import { ConversationRepository } from './conversation.repository';
 import {
+  buildPriceQuoteButtons,
+  buildProductCardButtons,
+  buildProductDetailButtons,
   CART_CONFIRM_BUTTONS,
-  PRODUCT_QUICK_REPLIES,
-  SHOP_FAQ_QUICK_REPLIES,
+  GREETING_MENU_BUTTONS,
+  PRODUCT_MENU_BUTTONS,
+  PRODUCT_SECONDARY_BUTTONS,
+  SHOP_FAQ_MENU_BUTTONS,
 } from './conversation.quick-replies';
 import { IntentClassifier } from './intent/intent.classifier';
 import { ProductAnswerService } from './product-answer.service';
@@ -454,10 +459,7 @@ export class ConversationService {
     const reply =
       'สวัสดีค่ะ ยินดีต้อนรับ 🙏\n\nมีอะไรให้ช่วยไหมคะ?';
     this.addRecentMessage(psid, 'assistant', reply);
-    await this.messenger.sendQuickReplies(psid, reply, [
-      ...PRODUCT_QUICK_REPLIES,
-      { content_type: 'text', title: 'เช็คออเดอร์', payload: 'CHECK_ORDER' },
-    ]);
+    await this.messenger.sendVerticalButtons(psid, reply, GREETING_MENU_BUTTONS);
   }
 
   private async handleProductInquiry(
@@ -491,18 +493,15 @@ export class ConversationService {
       await this.rememberLastProduct(psid, full.id);
       const msg = this.productService.formatProductMessage(full);
       this.addRecentMessage(psid, 'assistant', msg);
-      await this.messenger.sendButtonTemplate(psid, msg, [
-        { title: 'สั่งซื้อ', payload: `ORDER_PRODUCT:${full.id}` },
-        { title: 'คำนวณราคา', payload: 'PRICE_QUOTE' },
-        { title: 'เช็คสต็อก', payload: 'CHECK_STOCK' },
-      ]);
-      await this.messenger.sendQuickReplies(
+      await this.messenger.sendVerticalButtons(
+        psid,
+        msg,
+        buildProductDetailButtons(full.id),
+      );
+      await this.messenger.sendVerticalButtons(
         psid,
         'เลือกดำเนินการต่อได้เลยค่ะ',
-        [
-          { content_type: 'text', title: 'ดูสินค้าอื่น', payload: 'VIEW_OTHER_PRODUCTS' },
-          { content_type: 'text', title: 'ข้อมูลร้าน', payload: 'SHOP_FAQ' },
-        ],
+        PRODUCT_SECONDARY_BUTTONS,
       );
       return;
     }
@@ -515,20 +514,7 @@ export class ConversationService {
             title: p.name,
             subtitle: `คงเหลือ ${p.stock_qty.toLocaleString()} ชิ้น`,
             image_url: p.image_url ?? undefined,
-            buttons: [
-              {
-                title: 'สั่งซื้อ',
-                payload: `ORDER_PRODUCT:${p.id}`,
-              },
-              {
-                title: 'คำนวณราคา',
-                payload: `PRICE_QUOTE:${p.id}`,
-              },
-              {
-                title: 'เช็คสต็อก',
-                payload: `CHECK_STOCK:${p.id}`,
-              },
-            ],
+            buttons: buildProductCardButtons(p.id),
           };
         }),
       ),
@@ -710,25 +696,7 @@ export class ConversationService {
       `draft order updated psid=${psid} orderId=${orderId} items=${cartItems.length} total=${totalAmount}`,
     );
     this.addRecentMessage(psid, 'assistant', summary);
-    await this.messenger.sendButtonTemplate(
-      psid,
-      summary,
-      CART_CONFIRM_BUTTONS.slice(0, 3).map((button) => ({
-        title: button.title,
-        payload: button.payload,
-      })),
-    );
-    await this.messenger.sendQuickReplies(
-      psid,
-      'ต้องการล้างตะกร้าหรือยกเลิกออเดอร์ พิมพ์ "ยกเลิก" หรือกดปุ่มด้านล่างค่ะ',
-      [
-        {
-          content_type: 'text',
-          title: 'ล้างตะกร้า',
-          payload: 'CLEAR_CART',
-        },
-      ],
-    );
+    await this.messenger.sendVerticalButtons(psid, summary, CART_CONFIRM_BUTTONS);
   }
 
   private async confirmPendingOrder(
@@ -946,20 +914,7 @@ ${this.shopBankAccount}`;
           ? `${p.description.slice(0, 80)} · คงเหลือ ${p.stock_qty.toLocaleString()} ชิ้น`
           : `คงเหลือ ${p.stock_qty.toLocaleString()} ชิ้น`,
         image_url: p.image_url ?? undefined,
-        buttons: [
-          {
-            title: 'สั่งซื้อ',
-            payload: `ORDER_PRODUCT:${p.id}`,
-          },
-          {
-            title: 'คำนวณราคา',
-            payload: `PRICE_QUOTE:${p.id}`,
-          },
-          {
-            title: 'เช็คสต็อก',
-            payload: `CHECK_STOCK:${p.id}`,
-          },
-        ],
+        buttons: buildProductCardButtons(p.id),
       })),
     );
   }
@@ -1117,11 +1072,11 @@ ${this.shopBankAccount}`;
       inStock,
     );
     this.addRecentMessage(psid, 'assistant', msg);
-    await this.messenger.sendButtonTemplate(psid, msg, [
-      { title: 'สั่งซื้อ', payload: `ORDER_PRODUCT:${productId}` },
-      { title: 'คำนวณใหม่', payload: 'PRICE_QUOTE' },
-      { title: 'ดูสินค้าอื่น', payload: 'VIEW_OTHER_PRODUCTS' },
-    ]);
+    await this.messenger.sendVerticalButtons(
+      psid,
+      msg,
+      buildPriceQuoteButtons(productId),
+    );
   }
 
   private async handleShopFaq(
@@ -1132,7 +1087,7 @@ ${this.shopBankAccount}`;
     if (!topic) {
       const menu = this.shopFaqService.getMenuMessage();
       this.addRecentMessage(psid, 'assistant', menu);
-      await this.messenger.sendQuickReplies(psid, menu, SHOP_FAQ_QUICK_REPLIES);
+      await this.messenger.sendVerticalButtons(psid, menu, SHOP_FAQ_MENU_BUTTONS);
       return;
     }
 
@@ -1161,7 +1116,7 @@ ${this.shopBankAccount}`;
 
     const reply = 'ยกเลิกออเดอร์และล้างตะกร้าเรียบร้อยแล้วค่ะ';
     this.addRecentMessage(psid, 'assistant', reply);
-    await this.messenger.sendQuickReplies(psid, reply, PRODUCT_QUICK_REPLIES);
+    await this.messenger.sendVerticalButtons(psid, reply, PRODUCT_MENU_BUTTONS);
   }
 
   private async handleAddMoreProducts(

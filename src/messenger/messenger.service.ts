@@ -56,6 +56,20 @@ export class MessengerService {
     });
   }
 
+  /** ปุ่มเรียงแนวตั้ง (สูงสุด 3 ปุ่มต่อข้อความ — แบ่งเป็นหลายข้อความถ้าเกิน) */
+  async sendVerticalButtons(
+    psid: string,
+    text: string,
+    buttons: Array<{ title: string; payload: string }>,
+  ): Promise<void> {
+    const maxPerMessage = 3;
+    for (let i = 0; i < buttons.length; i += maxPerMessage) {
+      const chunk = buttons.slice(i, i + maxPerMessage);
+      const messageText = i === 0 ? text : '👇 เลือกต่อได้เลยค่ะ';
+      await this.sendButtonTemplate(psid, messageText, chunk);
+    }
+  }
+
   async sendGenericTemplate(
     psid: string,
     elements: Array<{
