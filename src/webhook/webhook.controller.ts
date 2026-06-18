@@ -45,7 +45,7 @@ export class WebhookController {
     @Headers('x-hub-signature-256') signature: string,
   ): Promise<string> {
     this.logger.log(
-      `Webhook POST received object=${body?.object ?? 'unknown'} entries=${body?.entry?.length ?? 0}`,
+      `Webhook POST received object=${body?.object ?? 'unknown'} entries=${body?.entry?.length ?? 0} body=${JSON.stringify(body)}`,
     );
 
     const rawBody = req.rawBody ?? Buffer.from(JSON.stringify(body));

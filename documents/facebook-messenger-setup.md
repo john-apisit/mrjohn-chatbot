@@ -64,15 +64,25 @@ Meta does **not** allow removing use cases after app creation. If your dashboard
 
 ## Step 2 — Get `FACEBOOK_APP_SECRET`
 
-Used by `WebhookService` to validate incoming webhook payloads.
+Used by `WebhookService` to validate incoming webhook POST payloads (`X-Hub-Signature-256`).
+
+**Do not confuse this with `FACEBOOK_VERIFY_TOKEN`.** They are different values for different steps:
+
+| Variable | Who creates it | Used for |
+|----------|----------------|----------|
+| `FACEBOOK_VERIFY_TOKEN` | You invent it | GET handshake when registering webhook |
+| `FACEBOOK_APP_SECRET` | Meta shows it in the App settings → Basic | POST signature verification on every event |
 
 1. In the app dashboard, go to **App settings** → **Basic** (left sidebar).
 2. Find **App Secret** → click **Show** (Meta may ask for your password).
-3. Copy the value into `.env`:
+3. Copy the **exact** value Meta displays (typically a 32-character hex string — **not** a `fb_secret_...` placeholder you make up).
+4. Set it in `.env` and in **Vercel → Settings → Environment Variables** (Production):
 
 ```env
-FACEBOOK_APP_SECRET=your_app_secret_here
+FACEBOOK_APP_SECRET=abc123def456...
 ```
+
+**Vercel:** paste the secret **without** surrounding quotes. Redeploy after changing env vars.
 
 Keep this secret. Never commit it to git or expose it in client-side code.
 
@@ -80,7 +90,7 @@ Keep this secret. Never commit it to git or expose it in client-side code.
 
 ## Step 3 — Choose `FACEBOOK_VERIFY_TOKEN`
 
-This is **not** issued by Meta — you invent it.
+This is **not** issued by Meta — you invent it. It is **not** the App Secret.
 
 1. Pick any long random string, for example:
 
@@ -340,9 +350,23 @@ Expected response: `401 Invalid signature` — this confirms POST routing works;
 - Confirm you are messaging the correct Page.
 - Confirm Vercel **Production** env vars match your Meta app (wrong `FACEBOOK_APP_SECRET` → signature fails → Meta may show delivery errors).
 
-### `Invalid signature` on POST requests
+### `Webhook POST rejected: invalid signature`
 
-- `FACEBOOK_APP_SECRET` must match the app connected to the webhook.
+This means POST requests reach your server, but HMAC verification failed.
+
+**Most common cause:** `FACEBOOK_APP_SECRET` is wrong — often confused with `FACEBOOK_VERIFY_TOKEN`, or a made-up placeholder instead of the real App Secret from **App settings → Basic**.
+
+| Check | Action |
+|-------|--------|
+| Wrong secret | Copy **App Secret** from Meta (Step 2), not the verify token |
+| Wrong app | Secret must be from the **same Meta app** that owns the webhook |
+| Vercel env | Set `FACEBOOK_APP_SECRET` in Vercel Production env, **no quotes**, then **Redeploy** |
+| Local vs Vercel | Vercel uses its own env vars — updating local `.env` alone is not enough |
+
+After fixing the secret and redeploying, send a test message again. You should see `Webhook POST received` **without** the invalid signature warning.
+
+Other causes (less common):
+
 - Do not modify the raw request body before signature verification (this project stores `rawBody` in `main.ts` for that reason).
 
 ### Send API errors (403 / 200 with error in body)
