@@ -498,11 +498,11 @@ export class ConversationService {
         msg,
         buildProductDetailButtons(full.id),
       );
-      await this.messenger.sendVerticalButtons(
-        psid,
-        'เลือกดำเนินการต่อได้เลยค่ะ',
-        PRODUCT_SECONDARY_BUTTONS,
-      );
+      // await this.messenger.sendVerticalButtons(
+      //   psid,
+      //   'เลือกดำเนินการต่อได้เลยค่ะ',
+      //   PRODUCT_SECONDARY_BUTTONS,
+      // );
       return;
     }
 
