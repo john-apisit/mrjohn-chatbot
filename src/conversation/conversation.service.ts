@@ -5,6 +5,7 @@ import { MessengerService } from '../messenger/messenger.service';
 import { FacebookMessagingEvent } from '../messenger/messenger.types';
 import { OrderService } from '../order/order.service';
 import { ProductService } from '../product/product.service';
+import { ProductRow } from '../product/product.types';
 import { SlipService } from '../slip/slip.service';
 import { ConversationRepository } from './conversation.repository';
 import { IntentClassifier } from './intent/intent.classifier';
@@ -708,19 +709,58 @@ ${this.shopBankAccount}`;
       return false;
     }
 
-    this.addRecentMessage(psid, 'assistant', result.message);
-
-    if (result.productId) {
-      await this.rememberLastProduct(psid, result.productId);
-      await this.messenger.sendButtonTemplate(psid, result.message, [
-        { title: 'สั่งซื้อ', payload: `ORDER_PRODUCT:${result.productId}` },
-        { title: 'ดูสินค้าอื่น', payload: 'VIEW_OTHER_PRODUCTS' },
-      ]);
-    } else {
-      await this.messenger.sendText(psid, result.message);
+    if (result.productIds.length) {
+      const products = await this.productService.getProductsByIds(
+        result.productIds,
+      );
+      if (products.length) {
+        await this.sendProductList(psid, products, result.message);
+        if (products.length === 1) {
+          await this.rememberLastProduct(psid, products[0].id);
+        }
+        return true;
+      }
     }
 
+    this.addRecentMessage(psid, 'assistant', result.message);
+    await this.messenger.sendText(psid, result.message);
     return true;
+  }
+
+  private async sendProductList(
+    psid: string,
+    products: ProductRow[],
+    introMessage?: string,
+  ): Promise<void> {
+    if (introMessage) {
+      this.addRecentMessage(psid, 'assistant', introMessage);
+      await this.messenger.sendText(psid, introMessage);
+    }
+
+    const listSummary = products
+      .map(
+        (p, i) =>
+          `${i + 1}. ${p.name}${p.description ? ` — ${p.description}` : ''} (คงเหลือ ${p.stock_qty.toLocaleString()} ชิ้น)`,
+      )
+      .join('\n');
+    this.addRecentMessage(psid, 'assistant', listSummary);
+
+    await this.messenger.sendGenericTemplate(
+      psid,
+      products.slice(0, 10).map((p) => ({
+        title: p.name,
+        subtitle: p.description
+          ? `${p.description.slice(0, 80)} · คงเหลือ ${p.stock_qty.toLocaleString()} ชิ้น`
+          : `คงเหลือ ${p.stock_qty.toLocaleString()} ชิ้น`,
+        image_url: p.image_url ?? undefined,
+        buttons: [
+          {
+            title: 'สั่งซื้อ',
+            payload: `ORDER_PRODUCT:${p.id}`,
+          },
+        ],
+      })),
+    );
   }
 
   private async rememberLastProduct(

@@ -35,6 +35,27 @@ export class ProductRepository {
     return (data ?? []) as ProductRow[];
   }
 
+  async getProductsByIds(ids: string[]): Promise<ProductRow[]> {
+    if (!ids.length) {
+      return [];
+    }
+    const client = this.supabase.getClient();
+    const { data, error } = await client
+      .from('products')
+      .select('*')
+      .eq('is_active', true)
+      .in('id', ids);
+
+    if (error) {
+      throw new Error(`Product fetch failed: ${error.message}`);
+    }
+    const rows = (data ?? []) as ProductRow[];
+    const order = new Map(ids.map((id, index) => [id, index]));
+    return rows.sort(
+      (a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0),
+    );
+  }
+
   async searchProducts(query: string, limit = 5): Promise<ProductRow[]> {
     const client = this.supabase.getClient();
     const { data, error } = await client
