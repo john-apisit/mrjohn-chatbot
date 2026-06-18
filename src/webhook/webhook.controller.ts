@@ -59,8 +59,7 @@ export class WebhookController {
     this.logger.log(
       `webhook POST received object=${body?.object ?? 'unknown'} entries=${entryCount} events=${eventCount} signaturePresent=${Boolean(signature)} rawBodyBytes=${req.rawBody?.length ?? 'parsed'}`,
     );
-    this.logger.debug(`webhook POST body=${JSON.stringify(body)}`);
-    this.logger.debug(`webhook POST signature=${signature}`);
+    // this.logger.debug(`webhook POST body=${JSON.stringify(body)}`);
 
     const rawBody = req.rawBody ?? Buffer.from(JSON.stringify(body));
 
