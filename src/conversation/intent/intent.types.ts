@@ -27,3 +27,14 @@ export const POSTBACK_INTENT_MAP: Record<string, string> = {
   CHANGE_QUANTITY: 'place_order',
   VIEW_OTHER_PRODUCTS: 'product_inquiry',
 };
+
+const PRODUCT_BROWSE_TRIGGERS = new Set([
+  'VIEW_PRODUCTS',
+  'VIEW_OTHER_PRODUCTS',
+  'ดูสินค้า',
+  'ดูสินค้าอื่น',
+]);
+
+export function isProductBrowseTrigger(query: string): boolean {
+  return PRODUCT_BROWSE_TRIGGERS.has(query.trim());
+}

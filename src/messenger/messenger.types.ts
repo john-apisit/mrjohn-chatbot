@@ -42,6 +42,9 @@ export interface FacebookMessagingEvent {
   message?: {
     mid: string;
     text?: string;
+    quick_reply?: {
+      payload: string;
+    };
     attachments?: Array<{
       type: string;
       payload: { url?: string; sticker_id?: number };

@@ -8,7 +8,7 @@ import { ProductService } from '../product/product.service';
 import { SlipService } from '../slip/slip.service';
 import { ConversationRepository } from './conversation.repository';
 import { IntentClassifier } from './intent/intent.classifier';
-import { POSTBACK_INTENT_MAP } from './intent/intent.types';
+import { POSTBACK_INTENT_MAP, isProductBrowseTrigger } from './intent/intent.types';
 
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX = 30;
@@ -74,6 +74,16 @@ export class ConversationService {
     }
 
     if (event.message?.text) {
+      const quickReplyPayload = event.message.quick_reply?.payload;
+      if (quickReplyPayload) {
+        this.logger.log(
+          `routing quick_reply psid=${psid} payload=${quickReplyPayload} text="${this.previewText(event.message.text)}"`,
+        );
+        await this.handlePostback(psid, quickReplyPayload);
+        this.logger.log(`handleEvent done psid=${psid} handler=quick_reply`);
+        return;
+      }
+
       this.logger.log(
         `routing text psid=${psid} text="${this.previewText(event.message.text)}"`,
       );
@@ -120,13 +130,7 @@ export class ConversationService {
     if (mappedIntent === 'greeting') {
       await this.handleGreeting(psid);
     } else if (mappedIntent === 'product_inquiry') {
-      await this.messenger.sendQuickReplies(
-        psid,
-        'กรุณาพิมพ์ชื่อสินค้าที่ต้องการค้นหาค่ะ',
-        [
-          { content_type: 'text', title: 'ดูสินค้า', payload: 'VIEW_PRODUCTS' },
-        ],
-      );
+      await this.handleProductInquiry(psid);
     } else if (mappedIntent === 'order_status') {
       await this.handleOrderStatus(psid);
     }
@@ -221,7 +225,7 @@ export class ConversationService {
       return;
     }
 
-    await this.messenger.sendText(psid, 'กำลังตรวจสอบสลิป กรุณารอสักครู่ค่ะ...');
+    await this.messenger.sendText(psid, 'ระบบกำลังตรวจสอบสลิป กรุณารอสักครู่นะคะ...');
     this.logger.log(
       `slip verification start psid=${psid} orderId=${orderId} amount=${order.total_amount}`,
     );
@@ -280,7 +284,7 @@ export class ConversationService {
 
       await this.messenger.sendText(
         psid,
-        `✅ ตรวจสอบสลิปเรียบร้อยแล้วค่ะ\n\n📋 ออเดอร์: ${paidOrder.order_number}\n💵 ยอด: ${result.amount.toLocaleString()} บาท\n\nขอบคุณที่สั่งซื้อค่ะ เราจะดำเนินการจัดส่งให้เร็วที่สุด`,
+        `✅ ตรวจสอบสลิปเรียบร้อยแล้วค่ะ\n\n📋 ออเดอร์: ${paidOrder.order_number}\n💵 ยอด: ${result.amount.toLocaleString()} บาท\n\nขอบคุณที่สั่งซื้อนะคะ เราจะดำเนินการจัดส่งให้เร็วที่สุด`,
       );
 
       await this.orderService.notifyAdmin('payment_received', orderId, {
@@ -319,9 +323,14 @@ export class ConversationService {
       case 'greeting':
         await this.handleGreeting(psid);
         break;
-      case 'product_inquiry':
-        await this.handleProductInquiry(psid, entities.product_name ?? text);
+      case 'product_inquiry': {
+        const query = entities.product_name ?? text;
+        await this.handleProductInquiry(
+          psid,
+          isProductBrowseTrigger(query) ? undefined : query,
+        );
         break;
+      }
       case 'stock_check':
         await this.handleStockCheck(psid, entities.product_name ?? text);
         break;
@@ -353,11 +362,15 @@ export class ConversationService {
 
   private async handleProductInquiry(
     psid: string,
-    query: string,
+    query?: string,
   ): Promise<void> {
-    const products = await this.productService.searchProducts(query);
+    const products = query
+      ? await this.productService.searchProducts(query)
+      : await this.productService.listProducts();
     if (!products.length) {
-      const reply = `ไม่พบสินค้า "${query}" กรุณาลองค้นหาด้วยชื่ออื่นค่ะ`;
+      const reply = query
+        ? `ไม่พบสินค้า "${query}" กรุณาลองค้นหาด้วยชื่ออื่นค่ะ`
+        : 'ยังไม่มีสินค้าในระบบค่ะ';
       this.addRecentMessage(psid, 'assistant', reply);
       await this.messenger.sendText(psid, reply);
       return;
@@ -713,7 +726,8 @@ ${this.shopBankAccount}`;
       return `type=image mid=${event.message?.mid ?? 'none'}`;
     }
     if (event.message?.text) {
-      return `type=text mid=${event.message?.mid ?? 'none'} text="${this.previewText(event.message.text)}"`;
+      const quickReply = event.message.quick_reply?.payload;
+      return `type=text mid=${event.message?.mid ?? 'none'} text="${this.previewText(event.message.text)}" quick_reply=${quickReply ?? 'none'}`;
     }
     return `type=unknown timestamp=${event.timestamp ?? 'none'}`;
   }

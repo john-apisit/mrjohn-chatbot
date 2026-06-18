@@ -14,6 +14,10 @@ export class ProductService {
     private readonly pricing: PricingService,
   ) {}
 
+  listProducts(): Promise<ProductRow[]> {
+    return this.repository.listProducts();
+  }
+
   searchProducts(query: string): Promise<ProductRow[]> {
     return this.repository.searchProducts(query);
   }
