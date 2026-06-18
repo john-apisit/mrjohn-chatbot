@@ -546,10 +546,14 @@ export class ConversationService {
       return;
     }
 
-    await this.conversationRepo.getOrCreate(psid);
+    const conversation = await this.conversationRepo.getOrCreate(psid);
     await this.conversationRepo.updateContext(
       psid,
-      { pending_product_id: productId, last_product_id: productId },
+      {
+        ...conversation.context,
+        pending_product_id: productId,
+        last_product_id: productId,
+      },
       'awaiting_quantity',
     );
 
