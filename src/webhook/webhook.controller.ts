@@ -44,9 +44,14 @@ export class WebhookController {
     @Body() body: FacebookWebhookBody,
     @Headers('x-hub-signature-256') signature: string,
   ): Promise<string> {
+    this.logger.log(
+      `Webhook POST received object=${body?.object ?? 'unknown'} entries=${body?.entry?.length ?? 0}`,
+    );
+
     const rawBody = req.rawBody ?? Buffer.from(JSON.stringify(body));
 
     if (!this.webhookService.verifySignature(signature, rawBody)) {
+      this.logger.warn('Webhook POST rejected: invalid signature');
       throw new UnauthorizedException('Invalid signature');
     }
 
