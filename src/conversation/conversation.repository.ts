@@ -17,11 +17,13 @@ export class ConversationRepository {
   async getOrCreate(psid: string): Promise<ConversationRow> {
     this.logger.log(`getOrCreate start psid=${psid}`);
     const client = this.supabase.getClient();
+    this.logger.log(`get supabase client done. psid=${psid}`);
     const { data: existing } = await client
       .from('conversations')
       .select('*')
       .eq('psid', psid)
       .maybeSingle();
+    this.logger.log(`get data from conversations table done. psid=${psid}`);
 
     if (existing) {
       const row = this.mapRow(existing);
