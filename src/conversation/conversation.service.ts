@@ -44,8 +44,12 @@ export class ConversationService {
 
   async handleEvent(event: FacebookMessagingEvent): Promise<void> {
     const psid = event.sender.id;
+    this.logger.log(
+      `handleEvent start psid=${psid} ${this.describeIncomingEvent(event)}`,
+    );
 
     if (!this.checkRateLimit(psid)) {
+      this.logger.warn(`rate limit exceeded psid=${psid}`);
       await this.messenger.sendText(
         psid,
         'คุณส่งข้อความบ่อยเกินไป กรุณารอสักครู่แล้วลองใหม่ค่ะ',
@@ -54,23 +58,40 @@ export class ConversationService {
     }
 
     if (event.postback) {
+      this.logger.log(
+        `routing postback psid=${psid} payload=${event.postback.payload}`,
+      );
       await this.handlePostback(psid, event.postback.payload);
+      this.logger.log(`handleEvent done psid=${psid} handler=postback`);
       return;
     }
 
     if (event.message?.attachments?.some((a) => a.type === 'image')) {
+      this.logger.log(`routing image psid=${psid}`);
       await this.handleImageAttachment(psid, event);
+      this.logger.log(`handleEvent done psid=${psid} handler=image`);
       return;
     }
 
     if (event.message?.text) {
+      this.logger.log(
+        `routing text psid=${psid} text="${this.previewText(event.message.text)}"`,
+      );
       await this.handleTextMessage(psid, event.message.text);
+      this.logger.log(`handleEvent done psid=${psid} handler=text`);
       return;
     }
+
+    this.logger.warn(
+      `unhandled event psid=${psid} ${this.describeIncomingEvent(event)}`,
+    );
   }
 
   private async handlePostback(psid: string, payload: string): Promise<void> {
     const conversation = await this.conversationRepo.getOrCreate(psid);
+    this.logger.log(
+      `handlePostback psid=${psid} payload=${payload} state=${conversation.state}`,
+    );
 
     if (payload === 'CONFIRM_ORDER') {
       await this.confirmPendingOrder(psid, conversation.context);
@@ -93,6 +114,9 @@ export class ConversationService {
     }
 
     const mappedIntent = POSTBACK_INTENT_MAP[payload];
+    this.logger.log(
+      `postback mapped psid=${psid} payload=${payload} intent=${mappedIntent ?? 'none'}`,
+    );
     if (mappedIntent === 'greeting') {
       await this.handleGreeting(psid);
     } else if (mappedIntent === 'product_inquiry') {
@@ -110,6 +134,9 @@ export class ConversationService {
 
   private async handleTextMessage(psid: string, text: string): Promise<void> {
     const conversation = await this.conversationRepo.getOrCreate(psid);
+    this.logger.log(
+      `handleTextMessage psid=${psid} state=${conversation.state} text="${this.previewText(text)}" context=${JSON.stringify(conversation.context)}`,
+    );
     this.addRecentMessage(psid, 'user', text);
 
     let intent: Intent;
@@ -120,6 +147,9 @@ export class ConversationService {
       if (qty !== null) {
         intent = 'place_order';
         entities = { quantity: qty };
+        this.logger.log(
+          `parsed quantity psid=${psid} quantity=${qty} intent=place_order`,
+        );
       } else {
         const result = await this.intentClassifier.classify({
           text,
@@ -129,6 +159,9 @@ export class ConversationService {
         });
         intent = result.intent;
         entities = result.entities;
+        this.logger.log(
+          `classified psid=${psid} source=awaiting_quantity intent=${intent} entities=${JSON.stringify(entities)}`,
+        );
       }
     } else {
       const result = await this.intentClassifier.classify({
@@ -139,6 +172,9 @@ export class ConversationService {
       });
       intent = result.intent;
       entities = result.entities;
+      this.logger.log(
+        `classified psid=${psid} source=default intent=${intent} entities=${JSON.stringify(entities)}`,
+      );
     }
 
     await this.routeIntent(psid, intent, entities, text);
@@ -149,6 +185,9 @@ export class ConversationService {
     event: FacebookMessagingEvent,
   ): Promise<void> {
     const conversation = await this.conversationRepo.getOrCreate(psid);
+    this.logger.log(
+      `handleImageAttachment psid=${psid} state=${conversation.state} pendingOrderId=${conversation.context.pending_order_id ?? 'none'}`,
+    );
 
     if (conversation.state !== 'awaiting_slip') {
       await this.messenger.sendText(
@@ -183,6 +222,9 @@ export class ConversationService {
     }
 
     await this.messenger.sendText(psid, 'กำลังตรวจสอบสลิป กรุณารอสักครู่ค่ะ...');
+    this.logger.log(
+      `slip verification start psid=${psid} orderId=${orderId} amount=${order.total_amount}`,
+    );
 
     try {
       const buffer = await this.slipService.downloadImageFromUrl(
@@ -192,6 +234,9 @@ export class ConversationService {
       const result = await this.slipService.verifySlipFromImage(
         buffer,
         Number(order.total_amount),
+      );
+      this.logger.log(
+        `slip verification result psid=${psid} orderId=${orderId} ok=${result.ok} code=${result.ok ? 'success' : result.code}`,
       );
 
       if (!result.ok) {
@@ -246,8 +291,14 @@ export class ConversationService {
       await this.messenger.notifyAdmin(
         `Payment received: ${paidOrder.order_number} — ${result.amount} THB`,
       );
+      this.logger.log(
+        `slip verification success psid=${psid} orderNumber=${paidOrder.order_number} amount=${result.amount}`,
+      );
     } catch (err) {
-      this.logger.error('Slip verification failed', err);
+      this.logger.error(
+        `slip verification failed psid=${psid} orderId=${orderId}`,
+        err instanceof Error ? err.stack : err,
+      );
       await this.messenger.sendText(
         psid,
         'ไม่สามารถตรวจสลิปได้ กรุณาลองส่งใหม่หรือติดต่อแอดมินค่ะ',
@@ -261,6 +312,9 @@ export class ConversationService {
     entities: { product_name?: string | null; quantity?: number | null },
     text: string,
   ): Promise<void> {
+    this.logger.log(
+      `routeIntent psid=${psid} intent=${intent} entities=${JSON.stringify(entities)}`,
+    );
     switch (intent) {
       case 'greeting':
         await this.handleGreeting(psid);
@@ -360,6 +414,9 @@ export class ConversationService {
   }
 
   private async startOrderFlow(psid: string, productId: string): Promise<void> {
+    this.logger.log(
+      `startOrderFlow psid=${psid} productId=${productId}`,
+    );
     const product = await this.productService.getProductById(productId);
     if (!product) {
       await this.messenger.sendText(psid, 'ไม่พบสินค้าค่ะ');
@@ -383,6 +440,9 @@ export class ConversationService {
     entities: { product_name?: string | null; quantity?: number | null },
   ): Promise<void> {
     const conversation = await this.conversationRepo.getOrCreate(psid);
+    this.logger.log(
+      `handlePlaceOrder psid=${psid} state=${conversation.state} entities=${JSON.stringify(entities)} context=${JSON.stringify(conversation.context)}`,
+    );
 
     if (conversation.state === 'awaiting_order_confirm') {
       await this.confirmPendingOrder(psid, conversation.context);
@@ -427,6 +487,9 @@ export class ConversationService {
 
     const inStock = await this.productService.checkStock(productId, quantity);
     if (!inStock) {
+      this.logger.warn(
+        `out of stock psid=${psid} productId=${productId} quantity=${quantity}`,
+      );
       await this.messenger.sendText(
         psid,
         'ขออภัยค่ะ สินค้าไม่เพียงพอ กรุณาลดจำนวนหรือติดต่อแอดมิน',
@@ -474,6 +537,9 @@ export class ConversationService {
       pending_order_id: order.id,
     }, 'awaiting_order_confirm');
 
+    this.logger.log(
+      `draft order created psid=${psid} orderId=${order.id} productId=${productId} quantity=${quantity} total=${resolved.line_total}`,
+    );
     this.addRecentMessage(psid, 'assistant', summary);
     await this.messenger.sendButtonTemplate(psid, summary, [
       { title: 'ยืนยันออเดอร์', payload: 'CONFIRM_ORDER' },
@@ -488,6 +554,9 @@ export class ConversationService {
     const orderId = context.pending_order_id;
     const productId = context.pending_product_id;
     const quantity = context.pending_quantity;
+    this.logger.log(
+      `confirmPendingOrder psid=${psid} orderId=${orderId ?? 'none'} productId=${productId ?? 'none'} quantity=${quantity ?? 'none'}`,
+    );
 
     if (!orderId || !productId || !quantity) {
       await this.messenger.sendText(psid, 'ไม่พบออเดอร์ กรุณาสั่งซื้อใหม่ค่ะ');
@@ -540,6 +609,9 @@ ${this.shopBankAccount}
     });
     await this.messenger.notifyAdmin(
       `New order: ${order.order_number} — ${order.total_amount} THB`,
+    );
+    this.logger.log(
+      `order confirmed psid=${psid} orderNumber=${order.order_number} total=${order.total_amount}`,
     );
   }
 
@@ -623,10 +695,30 @@ ${this.shopBankAccount}`;
     }
 
     if (entry.count >= RATE_LIMIT_MAX) {
+      this.logger.warn(
+        `rate limit blocked psid=${psid} count=${entry.count} resetAt=${entry.resetAt}`,
+      );
       return false;
     }
 
     entry.count++;
     return true;
+  }
+
+  private describeIncomingEvent(event: FacebookMessagingEvent): string {
+    if (event.postback) {
+      return `type=postback payload=${event.postback.payload}`;
+    }
+    if (event.message?.attachments?.some((a) => a.type === 'image')) {
+      return `type=image mid=${event.message?.mid ?? 'none'}`;
+    }
+    if (event.message?.text) {
+      return `type=text mid=${event.message?.mid ?? 'none'} text="${this.previewText(event.message.text)}"`;
+    }
+    return `type=unknown timestamp=${event.timestamp ?? 'none'}`;
+  }
+
+  private previewText(text: string, maxLength = 80): string {
+    return text.slice(0, maxLength).replace(/\s+/g, ' ');
   }
 }
